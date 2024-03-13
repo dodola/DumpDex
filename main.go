@@ -11,7 +11,7 @@ import (
 )
 
 const (
-	dexMagic = "dex\n"
+	dexMagic = "dex\n035\x00"
 )
 
 type memorySegment struct {
@@ -82,13 +82,13 @@ func findDexInMemory(pid int, segments []memorySegment) error {
 		return err
 	}
 	defer memFile.Close()
-	var i = 1
+
+	dexMagicLength := len(dexMagic)
 
 	for _, s := range segments {
 		if strings.Contains(s.perms, "r") {
 			length := s.endAddr - s.startAddr
 			data := make([]byte, length)
-			// fmt.Printf("===== read lenth===========%d", length)
 
 			_, err := memFile.Seek(int64(s.startAddr), 0)
 			if err != nil {
@@ -100,34 +100,36 @@ func findDexInMemory(pid int, segments []memorySegment) error {
 				continue
 			}
 
-			if string(data[:4]) == dexMagic {
-				i++
-				// Get the real size of the dex file from the header
-				realSize := binary.LittleEndian.Uint32(data[32:36])
-				realSizeData := make([]byte, realSize)
+			offset := 0
+			for offset <= len(data)-dexMagicLength {
+				if string(data[offset:offset+dexMagicLength]) == dexMagic {
+					if offset+36+dexMagicLength > len(data) {
+						break
+					}
+					realSize := binary.LittleEndian.Uint32(data[offset+32 : offset+36])
+					if offset+int(realSize) > len(data) {
+						break
+					}
+					realSizeData := data[offset : offset+int(realSize)]
 
-				// Read the real size of the dex from the memory
-				_, err := memFile.Seek(int64(s.startAddr), 0)
-				if err != nil {
-					continue
-				}
-				fmt.Printf("===== find dex=====%d\n", realSize)
+					f, err := os.Create(fmt.Sprintf("/data/local/tmp/%d-%x-%d.dex", pid, s.startAddr, offset))
+					if err != nil {
+						offset += dexMagicLength
+						continue
+					}
+					_, err = f.Write(realSizeData)
+					if err != nil {
+						f.Close()
+						offset += dexMagicLength
+						continue
+					}
+					fmt.Printf("Found DEX at segment [%x-%x] and wrote to /data/local/tmp/%d-%x-%d.dex\n", s.startAddr, s.startAddr+uintptr(realSize), pid, s.startAddr, offset)
+					f.Close()
 
-				_, err = memFile.Read(realSizeData)
-				if err != nil {
-					continue
+					offset += int(realSize)
+				} else {
+					offset++
 				}
-
-				// Write the real size data to a file
-				f, err := os.Create(fmt.Sprintf("/data/local/tmp/%d-%x.dex", pid, s.startAddr))
-				if err != nil {
-					continue
-				}
-				_, err = f.Write(realSizeData)
-				if err != nil {
-					continue
-				}
-				f.Close()
 			}
 		}
 	}
